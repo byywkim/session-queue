@@ -1,0 +1,12 @@
+{
+  "name": "session-queue",
+  "owner": {
+    "name": "byywkim"
+  },
+  "plugins": [
+    {
+      "name": "session-queue",
+      "source": "./"
+    }
+  ]
+}
