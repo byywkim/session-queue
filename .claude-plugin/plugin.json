@@ -1,7 +1,7 @@
 {
   "name": "session-queue",
-  "version": "0.1.0",
-  "description": "나를 기다리는 Code 세션을 오래 기다린 순으로 보여 주는 띠·패널·/queue 명령",
+  "version": "0.2.0",
+  "description": "Lists the Code sessions waiting on you, oldest first: a band above the prompt, a pane and /queue",
   "author": {
     "name": "byywkim"
   },

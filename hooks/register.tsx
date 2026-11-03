@@ -2,10 +2,21 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { QueueRow } from '../types'
-import { age, isSkipped, listText, parseScan, pick, rowHead, rowNeed, toDismissed, withDismissed } from './queue'
+import {
+  age,
+  isSkipped,
+  listText,
+  parseScan,
+  pick,
+  rowHead,
+  rowNeed,
+  titleOf,
+  toDismissed,
+  withDismissed,
+} from './queue'
+import { pickLang, STRINGS } from './strings'
 
 const PANE = 'session-queue'
-const TITLE = '대기열'
 // 엔진은 명령 이름을 영문·숫자·_·-로만 받는다(한글 '대기열'은 등록이 거부됨)
 const COMMAND = 'queue'
 const REFRESH_MS = 60 * 1000
@@ -13,6 +24,8 @@ const PYTHON = '/usr/bin/python3'
 // 이 파일에 적은 폴더에서 연 세션에서는 쉰다(예약 실행 전용 폴더처럼 띠를 볼 사람이 없는 곳).
 // 사람마다 다른 폴더 이름이라 저장소에는 올리지 않는다(.gitignore)
 const SKIP_FILE = 'skip-folders.txt'
+// 맥이 고른 언어 순서. 첫째 항목이 화면 언어를 정한다
+const LANGUAGES = ['/usr/bin/defaults', 'read', '-g', 'AppleLanguages']
 
 // 칸이 바뀌면 태그를 올린다: 예전 버전이 저장한 값은 버리고 처음 값으로 읽는다
 const snapshot = atom({ plugin: 'session-queue', key: 'snapshot' } as const, null, {
@@ -24,6 +37,7 @@ const dismissed = atom({ plugin: 'session-queue', key: 'dismissed' } as const, {
 const showOlder = atom({ plugin: 'session-queue', key: 'showOlder' } as const, false)
 const self = atom({ plugin: 'session-queue', key: 'self' } as const, null)
 const off = atom({ plugin: 'session-queue', key: 'off' } as const, false)
+const lang = atom({ plugin: 'session-queue', key: 'lang' } as const, 'en')
 
 // 스캔이 겹치지 않게: 돌고 있으면 그 결과를 같이 기다린다
 let scanning: Promise<void> | null = null
@@ -43,7 +57,7 @@ async function scanOnce($: EngineInterface): Promise<void> {
       { timeoutMs: 20 * 1000 },
     )
     if (ran.exitCode !== 0) {
-      throw new Error(ran.stderr.trim().split('\n').pop() || `종료 코드 ${ran.exitCode}`)
+      throw new Error(ran.stderr.trim().split('\n').pop() || `exit code ${ran.exitCode}`)
     }
     const scan = parseScan(ran.stdout)
     // 다른 세션에서 누른 '처리함'도 반영한다
@@ -61,6 +75,10 @@ async function scanOnce($: EngineInterface): Promise<void> {
   }
 }
 
+async function strings($: EngineInterface) {
+  return STRINGS[await read($, lang)]
+}
+
 async function dismiss($: EngineInterface, row: QueueRow): Promise<void> {
   const kept = withDismissed(toDismissed(await $.store.get('dismissed')), row)
   await $.store.set('dismissed', kept)
@@ -72,11 +90,11 @@ async function openSession($: EngineInterface, sid: string): Promise<void> {
   const ran = await $.process.run(['/usr/bin/open', `claude://code/continue?session=${sid}`], {
     timeoutMs: 10 * 1000,
   })
-  if (ran.exitCode !== 0) $.ui.toast('세션을 열지 못했습니다')
+  if (ran.exitCode !== 0) $.ui.toast((await strings($)).openFailed)
 }
 
 async function openPane($: EngineInterface): Promise<void> {
-  await $.ui.open({ id: PANE, title: TITLE })
+  await $.ui.open({ id: PANE, title: (await strings($)).pane })
   await refresh($)
 }
 
@@ -88,16 +106,15 @@ async function rowsNow($: EngineInterface) {
 
 async function answer($: EngineInterface, isPhone: boolean): Promise<{ text: string }> {
   await refresh($)
+  const t = await strings($)
   const now = await rowsNow($)
-  if (now === null) return { text: '세션 기록을 아직 읽지 못했습니다.' }
+  if (now === null) return { text: t.notRead }
   // 휴대폰(원격 제어)은 패널을 그리지 않으므로 글 목록으로 답한다
-  if (isPhone) return { text: listText(now.snap, now.rows) }
-  await $.ui.open({ id: PANE, title: TITLE })
+  if (isPhone) return { text: listText(now.snap, now.rows, t) }
+  await $.ui.open({ id: PANE, title: t.pane })
 
-  return { text: `기다리는 세션 ${now.rows.recent.length}개 — 대기열 패널을 열었습니다.` }
+  return { text: t.opened(now.rows.recent.length) }
 }
-
-const FAILED = { text: '대기열을 읽지 못했습니다.' }
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
@@ -108,9 +125,13 @@ export const register: Register = on => {
       await update($, off, () => true)
       return started
     }
+    // 언어 순서를 못 읽으면 영어로 둔다
+    const langs = await $.process.run(LANGUAGES, { timeoutMs: 5 * 1000 }).catch(() => null)
+    const picked = pickLang(langs !== null && langs.exitCode === 0 ? langs.stdout : '')
+    await update($, lang, () => picked)
     // 명령 등록이 막혀도 띠·패널은 돌게 한다
     await $.command
-      .register({ name: COMMAND, description: '대기열: 나를 기다리는 세션을 오래 기다린 순으로' })
+      .register({ name: COMMAND, description: STRINGS[picked].command })
       .catch(() => undefined)
     const id = await $.session.id()
     await update($, self, () => id)
@@ -128,7 +149,7 @@ export const register: Register = on => {
   })
 
   on('command.run', { command: 'queue' }, ($, e) => answer($, e.origin?.kind === 'bridge')).catch(
-    () => FAILED,
+    async $ => ({ text: (await strings($)).failed }),
   )
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
@@ -136,8 +157,9 @@ export const register: Register = on => {
     const now = await rowsNow($)
     const oldest = now?.rows.recent[0]
     if (now === null || oldest === undefined) return next(e)
-    const head = `⏳ 기다리는 세션 ${now.rows.recent.length}개`
-    const tail = `가장 오래 기다린 것 ${age(now.snap.at - oldest.since)} · ${oldest.title}`
+    const t = await strings($)
+    const head = t.waiting(now.rows.recent.length)
+    const tail = t.oldest(age(now.snap.at - oldest.since, t), titleOf(oldest, t))
     if (e.surface === 'mobile') {
       const { Text } = $.ui.resolve(e)
 
@@ -156,8 +178,9 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Button, Text } = $.ui.resolve(e)
+    const t = await strings($)
     const now = await rowsNow($)
-    if (now === null) return <Text dimColor>세션 기록을 읽는 중입니다…</Text>
+    if (now === null) return <Text dimColor>{t.loading}</Text>
     const { snap, rows } = now
     const isOlderShown = await read($, showOlder)
     // 세션 열기는 이 맥에서 앱 주소를 여는 것이라 휴대폰 화면에서는 뺀다
@@ -166,31 +189,29 @@ export const register: Register = on => {
       <Box key={`row-${row.sid}`} flexDirection="column" marginBottom={1}>
         {canOpen ? (
           <Button key={`open-${row.sid}`} plain onPress={() => openSession($, row.sid)}>
-            {rowHead(row, snap.at)}
+            {rowHead(row, snap.at, t)}
           </Button>
         ) : (
-          <Text>{rowHead(row, snap.at)}</Text>
+          <Text>{rowHead(row, snap.at, t)}</Text>
         )}
-        <Text dimColor>{rowNeed(row)}</Text>
-        <Button key={`done-${row.sid}`} plain dimColor label="처리함" onPress={() => dismiss($, row)} />
+        <Text dimColor>{rowNeed(row, t)}</Text>
+        <Button key={`done-${row.sid}`} plain dimColor label={t.done} onPress={() => dismiss($, row)} />
       </Box>
     )
 
     return (
       <Box flexDirection="column">
-        <Text dimColor>오래 기다린 순 · 제목을 누르면 그 세션이 열립니다</Text>
-        {rows.recent.length === 0 && <Text>2주 안에 기다리는 세션이 없습니다.</Text>}
+        <Text dimColor>{t.hint}</Text>
+        {rows.recent.length === 0 && <Text>{t.empty}</Text>}
         {rows.recent.map(line)}
         {rows.older.length > 0 && (
           <Button key="toggle-older" plain dimColor onPress={() => update($, showOlder, shown => !shown)}>
-            {isOlderShown ? '2주 넘은 것 접기' : `2주 넘은 것 ${rows.older.length}개 보기`}
+            {isOlderShown ? t.hideOlder : t.showOlder(rows.older.length)}
           </Button>
         )}
         {isOlderShown && rows.older.map(line)}
-        <Text dimColor>
-          {`1분마다 새로 읽음${snap.scheduled > 0 ? ` · 예약 실행 세션 ${snap.scheduled}개 제외` : ''}`}
-        </Text>
-        {snap.error !== null && <Text color="warning">{`기록을 읽지 못했습니다: ${snap.error}`}</Text>}
+        <Text dimColor>{t.footer(snap.scheduled)}</Text>
+        {snap.error !== null && <Text color="warning">{t.readError(snap.error)}</Text>}
       </Box>
     )
   })

@@ -77,7 +77,8 @@ def scan(base, now_ms):
         rows.append({
             'sid': record.get('sessionId'),
             'cli': record.get('cliSessionId'),
-            'title': one_line(record.get('title') or '(제목 없음)', 80),
+            # 제목이 없으면 비워 둔다: Mod가 화면 언어로 '(제목 없음)'을 넣는다
+            'title': one_line(record.get('title') or '', 80),
             'folder': folder,
             'kind': kind,
             'text': one_line(text),

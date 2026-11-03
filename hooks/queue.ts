@@ -1,4 +1,5 @@
 import type { Dismissed, QueueKind, QueueRow, QueueScan } from '../types'
+import type { Strings } from './strings'
 
 const MINUTE_MS = 60 * 1000
 const DAY_MS = 24 * 60 * MINUTE_MS
@@ -11,11 +12,6 @@ export const DISMISSED_CAP = 500
 // 앱이 세션 열기 주소(claude://code/continue)에서 받는 id 모양과 같다
 const SESSION_ID = /^local_[A-Za-z0-9-]{1,64}$/
 const KINDS: readonly string[] = ['ask', 'silent', 'failed']
-const KIND_LABEL: Record<QueueKind, string> = {
-  ask: '답 필요',
-  silent: '점 없는 질문',
-  failed: '오류',
-}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -38,7 +34,8 @@ function toRow(value: unknown): QueueRow[] {
     {
       sid,
       cli: str(value.cli),
-      title: str(value.title) || '(제목 없음)',
+      // 제목이 없으면 비워 두고, 보여 줄 때 화면 언어로 채운다(titleOf)
+      title: str(value.title),
       folder: str(value.folder),
       kind: kind as QueueKind,
       text: str(value.text),
@@ -52,7 +49,7 @@ function toRow(value: unknown): QueueRow[] {
 export function parseScan(stdout: string): QueueScan {
   const raw: unknown = JSON.parse(stdout)
   if (!isRecord(raw) || !Array.isArray(raw.rows)) {
-    throw new Error('스캐너 출력 모양이 다릅니다')
+    throw new Error('unexpected scanner output')
   }
   return { at: num(raw.at), rows: raw.rows.flatMap(toRow), scheduled: num(raw.scheduled) }
 }
@@ -103,39 +100,39 @@ export function pick(
   }
 }
 
-export function age(ms: number): string {
+export function age(ms: number, t: Strings): string {
   const minutes = Math.floor(Math.max(0, ms) / MINUTE_MS)
-  if (minutes < 1) return '방금'
-  if (minutes < 60) return `${minutes}분`
+  if (minutes < 1) return t.ago.now
+  if (minutes < 60) return t.ago.minutes(minutes)
   const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours}시간`
-  return `${Math.floor(hours / 24)}일`
+  if (hours < 24) return t.ago.hours(hours)
+  return t.ago.days(Math.floor(hours / 24))
 }
 
-export function kindLabel(kind: QueueKind): string {
-  return KIND_LABEL[kind]
+export function titleOf(row: QueueRow, t: Strings): string {
+  return row.title || t.untitled
 }
 
-export function rowHead(row: QueueRow, at: number): string {
-  return [age(at - row.since), row.folder, row.title].filter(Boolean).join(' · ')
+export function rowHead(row: QueueRow, at: number, t: Strings): string {
+  return [age(at - row.since, t), row.folder, titleOf(row, t)].filter(Boolean).join(' · ')
 }
 
-export function rowNeed(row: QueueRow): string {
-  return `${kindLabel(row.kind)} — ${row.text || '(남은 일 문구 없음)'}`
+export function rowNeed(row: QueueRow, t: Strings): string {
+  return `${t.kind[row.kind]} — ${row.text || t.noNote}`
 }
 
 // 패널이 없는 화면(휴대폰)과 명령 결과 줄에 쓰는 글 목록
-export function listText(scan: QueueScan, rows: { recent: QueueRow[]; older: QueueRow[] }): string {
+export function listText(
+  scan: QueueScan,
+  rows: { recent: QueueRow[]; older: QueueRow[] },
+  t: Strings,
+): string {
   const { recent, older } = rows
-  if (recent.length === 0) {
-    return older.length === 0
-      ? '기다리는 세션이 없습니다.'
-      : `2주 안에 기다리는 세션은 없습니다. 2주 넘은 것 ${older.length}개는 맥의 대기열 패널에서 볼 수 있습니다.`
-  }
-  const lines = [`기다리는 세션 ${recent.length}개 (오래 기다린 순)`]
+  if (recent.length === 0) return older.length === 0 ? t.none : t.onlyOlder(older.length)
+  const lines = [t.listHead(recent.length)]
   recent.forEach((row, index) => {
-    lines.push(`${index + 1}. ${rowHead(row, scan.at)}`, `   ${rowNeed(row)}`)
+    lines.push(`${index + 1}. ${rowHead(row, scan.at, t)}`, `   ${rowNeed(row, t)}`)
   })
-  if (older.length > 0) lines.push(`2주 넘은 것 ${older.length}개는 맥의 대기열 패널에서 볼 수 있습니다.`)
+  if (older.length > 0) lines.push(t.olderNote(older.length))
   return lines.join('\n')
 }

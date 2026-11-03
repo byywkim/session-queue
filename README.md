@@ -1,49 +1,55 @@
-# session-queue — 대기열 Mod
+# session-queue
 
-Claude 데스크톱 앱의 Code 탭에서, 나를 기다리는 세션을 오래 기다린 순으로 모아 보여 주는 Mod입니다. 세션에 일을 맡겨 두고 잊는 일을 줄이려고 만들었습니다. 사이드바의 폴더 묶음은 그대로 둡니다.
+**English** · [한국어](README.ko.md)
 
-## 보이는 것
+A mod for the Code tab of the Claude desktop app. It gathers the sessions that are waiting on you and lists them oldest first, so work you hand off to a session doesn't get forgotten. The sidebar and its folder groups stay as they are.
 
-- **입력창 위 띠**: `⏳ 기다리는 세션 n개 · 가장 오래 기다린 것 …`. 누르면 대기열 패널이 열립니다.
-- **대기열 패널**: 2주 안에 나를 기다리는 세션을 오래 기다린 순으로 보여 줍니다(기다린 시간·폴더·제목·남은 일). 제목을 누르면 그 세션이 열립니다. '처리함'을 누르면 그 세션의 다음 턴이 끝날 때까지 목록에서 빠집니다. 2주 넘은 것은 접어 둡니다.
-- **`/queue` 명령**: 대기열 패널을 엽니다. 휴대폰 원격 제어에서는 글 목록으로 답합니다.
+## What you get
 
-지금 보고 있는 세션과 예약 실행(스케줄) 세션은 목록에서 뺍니다.
+- **Band above the prompt**: `⏳ 3 sessions waiting · oldest 2d · …`. Click it to open the queue pane.
+- **Queue pane**: the sessions waiting on you from the last 2 weeks, oldest first, each with how long it has waited, its folder, its title and what it needs from you. Click a title to open that session. **Done** hides a session until its next turn ends. Sessions older than 2 weeks are folded away.
+- **`/queue` command**: opens the queue pane. Sent from Remote Control on your phone, it replies with a text list instead.
 
-## '기다리는 세션'의 기준
+The session you are looking at and scheduled-task sessions are left out.
 
-| 표시 | 뜻 |
+## What counts as waiting
+
+| Label | Meaning |
 |---|---|
-| 답 필요 | 사이드바에 점이 찍힌 세션(Claude가 답이나 결정을 기다림) |
-| 점 없는 질문 | 질문을 남겼지만 앱이 점을 찍지 않은 세션 |
-| 오류 | 최근 7일 안에 오류로 멈춘 세션 |
+| Needs reply | The sidebar shows a dot: Claude is waiting for your answer or decision |
+| Unmarked question | Claude left a question, but the app did not mark the session with a dot |
+| Error | The session stopped with an error in the last 7 days |
 
-## 설치
+## Language
 
-데스크톱 앱에서: 입력창 옆 **+** → **Plugins** → **Add marketplace**에 `byywkim/session-queue`를 넣고, **Add plugin**에서 session-queue를 고릅니다.
+The mod follows the first language in your Mac's preferred languages (System Settings → General → Language & Region): Korean if that is Korean, English otherwise.
 
-터미널의 Claude Code에서:
+## Install
+
+In the desktop app: click **+** next to the prompt → **Plugins** → **Add marketplace**, enter `byywkim/session-queue`, then choose session-queue under **Add plugin**.
+
+In Claude Code in a terminal:
 
 ```
 /plugin install session-queue --marketplace byywkim/session-queue
 ```
 
-`Add marketplace?`에는 `y`를 누르고, 설치 범위는 맨 위의 user를 그대로 고릅니다(Enter). 셸에서는 다음 한 줄로도 됩니다.
+Answer `y` to `Add marketplace?`, and keep the first install scope, user (press Enter). From a shell, one line does the same:
 
 ```
 claude plugin install session-queue --marketplace byywkim/session-queue
 ```
 
-설치한 뒤 새로 여는 세션부터 띠가 뜹니다.
+The band shows up in sessions you open after installing.
 
-## 필요한 것
+## Requirements
 
-- macOS와 Claude 데스크톱 앱(Code 탭)
-- `/usr/bin/python3`: 없으면 macOS가 Command Line Tools 설치를 묻습니다.
+- macOS and the Claude desktop app (Code tab)
+- `/usr/bin/python3`: if it is missing, macOS offers to install the Command Line Tools.
 
-## 알아 둘 점
+## Good to know
 
-- 이 맥에 있는 앱 세션 기록(`~/Library/Application Support/Claude/claude-code-sessions/`)을 1분마다, 그리고 턴이 끝날 때마다 읽습니다. 읽은 내용은 어디로도 보내지 않습니다.
-- 앱 내부 기록 형식을 읽으므로, 앱이 업데이트되면 동작이 달라질 수 있습니다.
-- 띠를 볼 사람이 없는 폴더(예: 예약 실행 전용 폴더)에서는 Mod를 쉬게 할 수 있습니다. Mod 폴더(`claude plugin list`의 Path)에 `skip-folders.txt`를 만들고 폴더 이름을 한 줄에 하나씩 적습니다. 업데이트 뒤에는 파일이 남아 있는지 확인하세요.
-- 점이 더 잘 찍히게 하려면 CLAUDE.md에 다음 한 줄을 넣어 두세요. "턴을 끝낼 때 사용자가 할 일(답·결정·발송·확인)이 남았으면, 끝맺음(wrap_up)에 `blocked: true`를 넣는다."
+- The mod reads the app's session records on this Mac (`~/Library/Application Support/Claude/claude-code-sessions/`) every minute and whenever a turn ends. Nothing it reads leaves your Mac.
+- It reads the app's internal record format, so an app update can change how it behaves.
+- To keep the mod quiet in folders where nobody watches the band (for example, a folder only scheduled tasks use), create `skip-folders.txt` in the mod's folder (the Path that `claude plugin list` shows) and write one folder name per line. After an update, check that the file is still there.
+- For more reliable dots, add this line to your CLAUDE.md: "When a turn ends with something left for me to do (an answer, a decision, sending something, a check), set `blocked: true` in the wrap-up (wrap_up)."
