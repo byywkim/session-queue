@@ -11,15 +11,21 @@
 - 끝맺음이 없고 분류기가 blocked·need_input이면 '답 필요'(ask).
 - 분류기가 failed면 '오류'(failed): 앱처럼 마지막 활동 7일 안만.
 사용자가 새 메시지를 보내면 앱이 두 칸을 비우므로, 답한 세션은 저절로 빠진다.
+
+세션마다 1분에 한 번 이 스크립트를 부른다. 기록을 전부 읽는 일은 한 번에 CPU 0.3초쯤이라,
+결과를 잠깐 파일에 두고 세션끼리 나눠 쓴다.
 """
 import glob
 import json
 import os
 import sys
+import tempfile
 import time
 import unicodedata
 
 BASE = os.path.expanduser('~/Library/Application Support/Claude/claude-code-sessions')
+CACHE = os.path.expanduser('~/Library/Caches/session-queue/scan.json')
+CACHE_MS = 45 * 1000
 FAILED_MS = 7 * 24 * 3600 * 1000
 WAITING = ('blocked', 'need_input')
 
@@ -89,6 +95,41 @@ def scan(base, now_ms):
     return {'at': now_ms, 'rows': rows, 'scheduled': scheduled}
 
 
+def cached(now_ms):
+    try:
+        if now_ms - os.path.getmtime(CACHE) * 1000 >= CACHE_MS:
+            return None
+        with open(CACHE, encoding='utf-8') as handle:
+            return handle.read()
+    except OSError:
+        return None
+
+
+def remember(text):
+    # 세션 여럿이 한꺼번에 써도 깨지지 않게 임시 파일을 쓰고 바꿔 끼운다. 못 써도 스캔은 계속한다
+    folder = os.path.dirname(CACHE)
+    try:
+        os.makedirs(folder, exist_ok=True)
+        fd, temp = tempfile.mkstemp(dir=folder)
+        with os.fdopen(fd, 'w', encoding='utf-8') as handle:
+            handle.write(text)
+        os.replace(temp, CACHE)
+    except OSError:
+        pass
+
+
+def main():
+    now_ms = int(time.time() * 1000)
+    # 폴더를 직접 준 실행(시험)은 나눠 쓰지 않는다
+    if len(sys.argv) > 1:
+        json.dump(scan(sys.argv[1], now_ms), sys.stdout, ensure_ascii=False)
+        return
+    text = cached(now_ms)
+    if text is None:
+        text = json.dumps(scan(BASE, now_ms), ensure_ascii=False)
+        remember(text)
+    sys.stdout.write(text)
+
+
 if __name__ == '__main__':
-    base = sys.argv[1] if len(sys.argv) > 1 else BASE
-    json.dump(scan(base, int(time.time() * 1000)), sys.stdout, ensure_ascii=False)
+    main()

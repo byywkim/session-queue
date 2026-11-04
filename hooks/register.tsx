@@ -1,22 +1,31 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { QueueRow } from '../types'
+import type { QueueRow, TodoItem } from '../types'
 import {
   age,
   isSkipped,
+  itemMeta,
+  listsPath,
   listText,
   parseScan,
+  parseTodo,
   pick,
   rowHead,
   rowNeed,
   titleOf,
   toDismissed,
+  todoCounts,
+  todoText,
+  todoUpdated,
+  visibleLists,
   withDismissed,
+  withHandled,
 } from './queue'
 import { pickLang, STRINGS } from './strings'
 
 const PANE = 'session-queue'
+const TODO_PANE = 'session-queue-todo'
 // 엔진은 명령 이름을 영문·숫자·_·-로만 받는다(한글 '대기열'은 등록이 거부됨)
 const COMMAND = 'queue'
 const REFRESH_MS = 60 * 1000
@@ -24,6 +33,9 @@ const PYTHON = '/usr/bin/python3'
 // 이 파일에 적은 폴더에서 연 세션에서는 쉰다(예약 실행 전용 폴더처럼 띠를 볼 사람이 없는 곳).
 // 사람마다 다른 폴더 이름이라 저장소에는 올리지 않는다(.gitignore)
 const SKIP_FILE = 'skip-folders.txt'
+// 이 파일에 적은 경로의 목록 파일을 띠 오른쪽 숫자와 '할 일' 패널로 보여 준다.
+// 사람마다 다른 경로라 저장소에는 올리지 않는다(.gitignore)
+const LISTS_CONF = 'lists-file.txt'
 // 맥이 고른 언어 순서. 첫째 항목이 화면 언어를 정한다
 const LANGUAGES = ['/usr/bin/defaults', 'read', '-g', 'AppleLanguages']
 
@@ -38,14 +50,21 @@ const showOlder = atom({ plugin: 'session-queue', key: 'showOlder' } as const, f
 const self = atom({ plugin: 'session-queue', key: 'self' } as const, null)
 const off = atom({ plugin: 'session-queue', key: 'off' } as const, false)
 const lang = atom({ plugin: 'session-queue', key: 'lang' } as const, 'en')
+const listsFile = atom({ plugin: 'session-queue', key: 'listsFile' } as const, null)
+const todo = atom({ plugin: 'session-queue', key: 'todo' } as const, null, { shape: 'todo-1' })
+const handled = atom({ plugin: 'session-queue', key: 'handled' } as const, {}, {
+  shape: 'handled-1',
+})
 
 // 스캔이 겹치지 않게: 돌고 있으면 그 결과를 같이 기다린다
 let scanning: Promise<void> | null = null
 
 function refresh($: EngineInterface): Promise<void> {
-  scanning ??= scanOnce($).finally(() => {
-    scanning = null
-  })
+  scanning ??= Promise.all([scanOnce($), readTodo($)])
+    .then(() => undefined)
+    .finally(() => {
+      scanning = null
+    })
   return scanning
 }
 
@@ -75,6 +94,28 @@ async function scanOnce($: EngineInterface): Promise<void> {
   }
 }
 
+async function readTodo($: EngineInterface): Promise<void> {
+  const path = await read($, listsFile)
+  if (path === null) return
+  const at = await $.clock.now()
+  try {
+    const text = await $.fs.read(path)
+    const file = parseTodo(typeof text === 'string' ? text : '')
+    // 다른 세션에서 누른 [처리]도 반영한다
+    const stored = toDismissed(await $.store.get('handled'))
+    await update($, handled, () => stored)
+    await update($, todo, () => ({ ...file, at, error: null }))
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    await update($, todo, last => ({
+      lists: last?.lists ?? [],
+      updatedAt: last?.updatedAt ?? 0,
+      at,
+      error: message,
+    }))
+  }
+}
+
 async function strings($: EngineInterface) {
   return STRINGS[await read($, lang)]
 }
@@ -83,6 +124,18 @@ async function dismiss($: EngineInterface, row: QueueRow): Promise<void> {
   const kept = withDismissed(toDismissed(await $.store.get('dismissed')), row)
   await $.store.set('dismissed', kept)
   await update($, dismissed, () => kept)
+}
+
+async function handleItem($: EngineInterface, item: TodoItem): Promise<void> {
+  const kept = withHandled(toDismissed(await $.store.get('handled')), item)
+  await $.store.set('handled', kept)
+  await update($, handled, () => kept)
+}
+
+async function openLink($: EngineInterface, href: string): Promise<void> {
+  // 주소 모양은 parseTodo가 이미 걸렀다(https만)
+  const ran = await $.process.run(['/usr/bin/open', href], { timeoutMs: 10 * 1000 })
+  if (ran.exitCode !== 0) $.ui.toast((await strings($)).linkFailed)
 }
 
 async function openSession($: EngineInterface, sid: string): Promise<void> {
@@ -98,6 +151,11 @@ async function openPane($: EngineInterface): Promise<void> {
   await refresh($)
 }
 
+async function openTodoPane($: EngineInterface): Promise<void> {
+  await $.ui.open({ id: TODO_PANE, title: (await strings($)).todoPane })
+  await refresh($)
+}
+
 async function rowsNow($: EngineInterface) {
   const snap = await read($, snapshot)
   if (snap === null) return null
@@ -110,7 +168,13 @@ async function answer($: EngineInterface, isPhone: boolean): Promise<{ text: str
   const now = await rowsNow($)
   if (now === null) return { text: t.notRead }
   // 휴대폰(원격 제어)은 패널을 그리지 않으므로 글 목록으로 답한다
-  if (isPhone) return { text: listText(now.snap, now.rows, t) }
+  if (isPhone) {
+    const snap = await read($, todo)
+    const lists = visibleLists(snap, await read($, handled))
+    const todoLines = todoText(lists, snap?.at ?? now.snap.at, t)
+
+    return { text: [listText(now.snap, now.rows, t), todoLines].filter(Boolean).join('\n\n') }
+  }
   await $.ui.open({ id: PANE, title: t.pane })
 
   return { text: t.opened(now.rows.recent.length) }
@@ -129,6 +193,10 @@ export const register: Register = on => {
     const langs = await $.process.run(LANGUAGES, { timeoutMs: 5 * 1000 }).catch(() => null)
     const picked = pickLang(langs !== null && langs.exitCode === 0 ? langs.stdout : '')
     await update($, lang, () => picked)
+    // 파일이 없으면 할 일 목록 없이 돈다
+    const conf = await $.fs.read(`${$.plugin.root}/${LISTS_CONF}`).catch(() => '')
+    const path = listsPath(typeof conf === 'string' ? conf : '')
+    await update($, listsFile, () => path)
     // 명령 등록이 막혀도 띠·패널은 돌게 한다
     await $.command
       .register({ name: COMMAND, description: STRINGS[picked].command })
@@ -156,22 +224,40 @@ export const register: Register = on => {
     if (e.props.hasSurvey || (await read($, off))) return next(e)
     const now = await rowsNow($)
     const oldest = now?.rows.recent[0]
-    if (now === null || oldest === undefined) return next(e)
+    const counts = todoCounts(visibleLists(await read($, todo), await read($, handled)))
+    if ((now === null || oldest === undefined) && counts === '') return next(e)
     const t = await strings($)
-    const head = t.waiting(now.rows.recent.length)
-    const tail = t.oldest(age(now.snap.at - oldest.since, t), titleOf(oldest, t))
+    const head = now === null || oldest === undefined ? '' : t.waiting(now.rows.recent.length)
+    // 오른쪽에 숫자가 있으면 왼쪽을 줄여 한 줄에 둔다
+    const tail =
+      now === null || oldest === undefined || counts !== ''
+        ? ''
+        : t.oldest(age(now.snap.at - oldest.since, t), titleOf(oldest, t))
     if (e.surface === 'mobile') {
       const { Text } = $.ui.resolve(e)
 
-      return <Text>{`${head} · ${tail} · /${COMMAND}`}</Text>
+      return <Text>{[head, tail, counts, `/${COMMAND}`].filter(Boolean).join(' · ')}</Text>
     }
     const { Box, Button, Text } = $.ui.resolve(e)
-
-    return (
-      <Box>
+    const left =
+      tail === '' ? (
+        <Button key="open-queue" plain onPress={() => openPane($)}>
+          {head}
+        </Button>
+      ) : (
         <Button key="open-queue" plain onPress={() => openPane($)}>
           {head} <Text dimColor>{`· ${tail}`}</Text>
         </Button>
+      )
+
+    return (
+      <Box justifyContent={head === '' ? 'flex-end' : 'space-between'}>
+        {head !== '' && left}
+        {counts !== '' && (
+          <Button key="open-todo" plain onPress={() => openTodoPane($)}>
+            {counts}
+          </Button>
+        )}
       </Box>
     )
   })
@@ -212,6 +298,47 @@ export const register: Register = on => {
         {isOlderShown && rows.older.map(line)}
         <Text dimColor>{t.footer(snap.scheduled)}</Text>
         {snap.error !== null && <Text color="warning">{t.readError(snap.error)}</Text>}
+      </Box>
+    )
+  })
+
+  on('ui.render', { component: 'Pane', requestId: TODO_PANE }, async ($, e) => {
+    const { Box, Button, Text } = $.ui.resolve(e)
+    const t = await strings($)
+    const snap = await read($, todo)
+    if (snap === null) return <Text dimColor>{t.todoLoading}</Text>
+    const lists = visibleLists(snap, await read($, handled))
+    // 링크 열기는 이 맥에서 여는 것이라 휴대폰 화면에서는 뺀다
+    const canOpen = e.surface !== 'mobile'
+    const line = (item: TodoItem) => (
+      <Box key={`item-${item.id}`} justifyContent="space-between" gap={1} marginBottom={1}>
+        <Box flexDirection="column" flexShrink={1}>
+          {canOpen && item.href !== '' ? (
+            <Button key={`go-${item.id}`} plain onPress={() => openLink($, item.href)}>
+              {item.text}
+            </Button>
+          ) : (
+            <Text>{item.text}</Text>
+          )}
+          <Text dimColor>{itemMeta(item, snap.at, t)}</Text>
+        </Box>
+        <Button key={`handle-${item.id}`} dimColor label={t.todoDone} onPress={() => handleItem($, item)} />
+      </Box>
+    )
+
+    return (
+      <Box flexDirection="column">
+        <Text dimColor>{t.todoHint}</Text>
+        {lists.every(list => list.items.length === 0) && <Text>{t.todoEmpty}</Text>}
+        {lists.map(list => (
+          <Box key={`list-${list.key}`} flexDirection="column" marginTop={1}>
+            <Text bold>{[list.icon, list.label].filter(Boolean).join(' ')}</Text>
+            {list.note !== '' && <Text dimColor>{list.note}</Text>}
+            {list.items.map(line)}
+          </Box>
+        ))}
+        {snap.updatedAt > 0 && <Text dimColor>{todoUpdated(snap, t)}</Text>}
+        {snap.error !== null && <Text color="warning">{t.todoReadError(snap.error)}</Text>}
       </Box>
     )
   })

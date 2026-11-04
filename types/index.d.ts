@@ -24,6 +24,26 @@ export type Dismissed = Record<string, string>
 // 화면 글의 언어: 맥의 첫째 언어가 한국어면 ko, 아니면 en
 export type Lang = 'en' | 'ko'
 
+// 할 일 목록 파일(lists-file.txt가 가리키는 JSON)의 한 줄. since는 ISO 시각이고, 비어 있으면 기다린 시간을 안 보인다
+export type TodoItem = {
+  id: string
+  text: string
+  source: string
+  since: string
+  // https가 아니면 빈 값으로 받는다: 줄을 눌러도 아무것도 열리지 않는다
+  href: string
+}
+
+export type TodoList = { key: string; icon: string; label: string; note: string; items: TodoItem[] }
+
+export type TodoFile = { lists: TodoList[]; updatedAt: number }
+
+// at = 파일을 읽은 시각. 기다린 시간은 이 시각으로 잰다
+export type TodoSnapshot = TodoFile & { at: number; error: string | null }
+
+// [처리]로 숨긴 줄: 줄 id → 그때의 since. 새 글로 since가 바뀌면 다시 뜬다
+export type Handled = Record<string, string>
+
 declare module 'claude-code' {
   interface PluginState {
     'session-queue': {
@@ -34,6 +54,10 @@ declare module 'claude-code' {
       // 쉬는 폴더(skip-folders.txt)에서 연 세션이면 true: 스캔·띠·명령을 모두 쉰다
       off: boolean
       lang: Lang
+      // 할 일 목록 파일 경로. lists-file.txt가 없으면 null이고 이 기능은 쉰다
+      listsFile: string | null
+      todo: Shaped<TodoSnapshot | null>
+      handled: Shaped<Handled>
     }
   }
 }

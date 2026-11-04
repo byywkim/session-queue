@@ -31,6 +31,14 @@ export type Strings = {
   onlyOlder: (n: number) => string
   listHead: (n: number) => string
   olderNote: (n: number) => string
+  todoPane: string
+  todoHint: string
+  todoEmpty: string
+  todoLoading: string
+  todoDone: string
+  todoUpdated: (age: string) => string
+  todoReadError: (message: string) => string
+  linkFailed: string
 }
 
 const count = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`
@@ -62,6 +70,14 @@ export const STRINGS: Record<Lang, Strings> = {
       `No sessions waiting on you in the last 2 weeks. ${n} older than 2 weeks: see the queue pane on your Mac.`,
     listHead: n => `${count(n, 'session')} waiting (oldest first)`,
     olderNote: n => `${n} older than 2 weeks: see the queue pane on your Mac.`,
+    todoPane: 'To-do',
+    todoHint: 'Click a line to open it · Done hides it here and changes nothing at the source',
+    todoEmpty: 'Nothing left on the list.',
+    todoLoading: 'Reading the list file…',
+    todoDone: 'Done',
+    todoUpdated: age => `List updated ${age} ago`,
+    todoReadError: message => `Could not read the list file: ${message}`,
+    linkFailed: 'Could not open the link',
   },
   ko: {
     pane: '대기열',
@@ -89,6 +105,14 @@ export const STRINGS: Record<Lang, Strings> = {
       `2주 안에 기다리는 세션은 없습니다. 2주 넘은 것 ${n}개는 맥의 대기열 패널에서 볼 수 있습니다.`,
     listHead: n => `기다리는 세션 ${n}개 (오래 기다린 순)`,
     olderNote: n => `2주 넘은 것 ${n}개는 맥의 대기열 패널에서 볼 수 있습니다.`,
+    todoPane: '할 일',
+    todoHint: '줄을 누르면 원문이 열립니다 · 처리는 여기서만 숨기고 원문은 바꾸지 않습니다',
+    todoEmpty: '남은 할 일이 없습니다.',
+    todoLoading: '목록 파일을 읽는 중입니다…',
+    todoDone: '처리',
+    todoUpdated: age => `목록 갱신 ${age} 전`,
+    todoReadError: message => `목록 파일을 읽지 못했습니다: ${message}`,
+    linkFailed: '링크를 열지 못했습니다',
   },
 }
 

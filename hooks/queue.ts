@@ -1,4 +1,14 @@
-import type { Dismissed, QueueKind, QueueRow, QueueScan } from '../types'
+import type {
+  Dismissed,
+  Handled,
+  QueueKind,
+  QueueRow,
+  QueueScan,
+  TodoFile,
+  TodoItem,
+  TodoList,
+  TodoSnapshot,
+} from '../types'
 import type { Strings } from './strings'
 
 const MINUTE_MS = 60 * 1000
@@ -12,6 +22,12 @@ export const DISMISSED_CAP = 500
 // 앱이 세션 열기 주소(claude://code/continue)에서 받는 id 모양과 같다
 const SESSION_ID = /^local_[A-Za-z0-9-]{1,64}$/
 const KINDS: readonly string[] = ['ask', 'silent', 'failed']
+// 목록 파일은 Mod 밖에서 만들어지므로 그리기 전에 크기를 줄인다
+const LISTS_CAP = 5
+const ITEMS_CAP = 200
+const TEXT_CAP = 120
+// 줄을 누르면 이 주소를 맥에서 연다. 공백이 있거나 https가 아니면 받지 않는다
+const LINK = /^https:\/\/[^\s]+$/
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -85,6 +101,81 @@ export function withDismissed(dismissed: Dismissed, row: QueueRow): Dismissed {
   return capDismissed({ ...rest, [row.sid]: row.marker })
 }
 
+export function withHandled(handled: Handled, item: TodoItem): Handled {
+  const rest = Object.fromEntries(Object.entries(handled).filter(([id]) => id !== item.id))
+  return capDismissed({ ...rest, [item.id]: item.since })
+}
+
+// lists-file.txt의 첫 줄(#로 시작하는 설명 줄 제외)이 절대 경로면 그 경로, 아니면 null
+export function listsPath(conf: string): string | null {
+  const first = conf
+    .split('\n')
+    .map(line => line.trim())
+    .find(line => line !== '' && !line.startsWith('#'))
+  return first?.startsWith('/') ? first : null
+}
+
+function toItem(value: unknown): TodoItem[] {
+  if (!isRecord(value)) return []
+  const id = str(value.id)
+  const text = str(value.text).slice(0, TEXT_CAP)
+  if (id === '' || text === '') return []
+  const href = str(value.href)
+  return [
+    {
+      id,
+      text,
+      source: str(value.source).slice(0, TEXT_CAP),
+      since: str(value.since),
+      href: LINK.test(href) ? href : '',
+    },
+  ]
+}
+
+function toList(value: unknown): TodoList[] {
+  if (!isRecord(value) || !Array.isArray(value.items)) return []
+  const key = str(value.key)
+  if (key === '') return []
+  return [
+    {
+      key,
+      icon: str(value.icon).slice(0, 4),
+      label: str(value.label).slice(0, TEXT_CAP) || key,
+      note: str(value.note).slice(0, 2 * TEXT_CAP),
+      items: value.items.slice(0, ITEMS_CAP).flatMap(toItem),
+    },
+  ]
+}
+
+// 목록 파일을 읽는다. 모양이 다른 줄은 버리고, 전체가 다르면 throw
+export function parseTodo(text: string): TodoFile {
+  const raw: unknown = JSON.parse(text)
+  if (!isRecord(raw) || !Array.isArray(raw.lists)) {
+    throw new Error('unexpected list file')
+  }
+  const updatedAt = Date.parse(str(raw.updatedAt))
+  return {
+    lists: raw.lists.slice(0, LISTS_CAP).flatMap(toList),
+    updatedAt: Number.isNaN(updatedAt) ? 0 : updatedAt,
+  }
+}
+
+// 보여 줄 목록: [처리]한 줄을 뺀다. 그 뒤 since가 바뀐 줄은 새 글이 온 것이라 다시 보인다
+export function visibleLists(todo: TodoSnapshot | null, handled: Handled): TodoList[] {
+  return (todo?.lists ?? []).map(list => ({
+    ...list,
+    items: list.items.filter(item => handled[item.id] !== item.since),
+  }))
+}
+
+// 띠 오른쪽: '✉ 답장 3 · ✅ 오늘 2'. 남은 줄이 없는 목록은 뺀다
+export function todoCounts(lists: TodoList[]): string {
+  return lists
+    .filter(list => list.items.length > 0)
+    .map(list => [list.icon, list.label, list.items.length].filter(Boolean).join(' '))
+    .join(' · ')
+}
+
 // 보여 줄 줄: 지금 세션과 '처리함'으로 숨긴 것을 빼고, 오래 기다린 순으로
 export function pick(
   scan: QueueScan,
@@ -119,6 +210,32 @@ export function rowHead(row: QueueRow, at: number, t: Strings): string {
 
 export function rowNeed(row: QueueRow, t: Strings): string {
   return `${t.kind[row.kind]} — ${row.text || t.noNote}`
+}
+
+// 패널 줄 아래 작은 글: '슬랙 · 2시간'. since가 없거나 시각이 아니면 출처만
+export function itemMeta(item: TodoItem, at: number, t: Strings): string {
+  const since = Date.parse(item.since)
+  return [item.source, Number.isNaN(since) ? '' : age(at - since, t)].filter(Boolean).join(' · ')
+}
+
+// 패널 맨 아래 '목록 갱신 3시간 전'. 방금 쓴 파일도 1분으로 보인다
+export function todoUpdated(todo: TodoSnapshot, t: Strings): string {
+  return t.todoUpdated(age(Math.max(MINUTE_MS, todo.at - todo.updatedAt), t))
+}
+
+// 패널이 없는 화면(휴대폰)의 글 목록: 줄마다 링크까지 적어 눌러서 열게 한다
+export function todoText(lists: TodoList[], at: number, t: Strings): string {
+  const lines: string[] = []
+  for (const list of lists) {
+    if (list.items.length === 0 && list.note === '') continue
+    const head = [list.icon, list.label, list.items.length].filter(Boolean).join(' ')
+    lines.push(list.note === '' ? head : `${head} · ${list.note}`)
+    list.items.forEach((item, index) => {
+      lines.push(`${index + 1}. ${item.text} (${itemMeta(item, at, t)})`)
+      if (item.href !== '') lines.push(`   ${item.href}`)
+    })
+  }
+  return lines.join('\n')
 }
 
 // 패널이 없는 화면(휴대폰)과 명령 결과 줄에 쓰는 글 목록
