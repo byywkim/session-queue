@@ -53,3 +53,7 @@ The band shows up in sessions you open after installing.
 - It reads the app's internal record format, so an app update can change how it behaves.
 - To keep the mod quiet in folders where nobody watches the band (for example, a folder only scheduled tasks use), create `skip-folders.txt` in the mod's folder (the Path that `claude plugin list` shows) and write one folder name per line. After an update, check that the file is still there.
 - For more reliable dots, add this line to your CLAUDE.md: "When a turn ends with something left for me to do (an answer, a decision, sending something, a check), set `blocked: true` in the wrap-up (wrap_up)."
+
+## License
+
+[MIT](LICENSE)

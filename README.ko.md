@@ -53,3 +53,7 @@ claude plugin install session-queue --marketplace byywkim/session-queue
 - 앱 내부 기록 형식을 읽으므로, 앱이 업데이트되면 동작이 달라질 수 있습니다.
 - 띠를 볼 사람이 없는 폴더(예: 예약 실행 전용 폴더)에서는 Mod를 쉬게 할 수 있습니다. Mod 폴더(`claude plugin list`의 Path)에 `skip-folders.txt`를 만들고 폴더 이름을 한 줄에 하나씩 적습니다. 업데이트 뒤에는 파일이 남아 있는지 확인하세요.
 - 점이 더 잘 찍히게 하려면 CLAUDE.md에 다음 한 줄을 넣어 두세요. "턴을 끝낼 때 사용자가 할 일(답·결정·발송·확인)이 남았으면, 끝맺음(wrap_up)에 `blocked: true`를 넣는다."
+
+## 라이선스
+
+[MIT](LICENSE)
