@@ -17,7 +17,7 @@ The session you are looking at and scheduled-task sessions are left out.
 
 | Label | Meaning |
 |---|---|
-| Needs reply | The sidebar shows a dot: Claude is waiting for your answer or decision |
+| Needs reply | Claude is waiting for your answer or decision: the sidebar shows a dot, or a choice dialog is open in the middle of a turn |
 | Unmarked question | Claude left a question, but the app did not mark the session with a dot |
 | Error | The session stopped with an error in the last 7 days |
 
@@ -84,6 +84,7 @@ The band shows up in sessions you open after installing.
 ## Good to know
 
 - The mod reads the app's session records on this Mac (`~/Library/Application Support/Claude/claude-code-sessions/`) every minute and whenever a turn ends. Open sessions share the result through a small file in `~/Library/Caches/session-queue/`. Nothing it reads leaves your Mac.
+- The app keeps no record of an open choice dialog, so for sessions whose turn has not ended the mod also reads the end of the conversation log in `~/.claude/projects/`. Tool permission prompts are not listed.
 - It reads the app's internal record format, so an app update can change how it behaves.
 - To keep the mod quiet in folders where nobody watches the band (for example, a folder only scheduled tasks use), create `skip-folders.txt` in the mod's folder (the Path that `claude plugin list` shows) and write one folder name per line. After an update, check that the file is still there.
 - For more reliable dots, add this line to your CLAUDE.md: "When a turn ends with something left for me to do (an answer, a decision, sending something, a check), set `blocked: true` in the wrap-up (wrap_up)."

@@ -12,6 +12,9 @@
 - 분류기가 failed면 '오류'(failed): 앱처럼 마지막 활동 7일 안만.
 사용자가 새 메시지를 보내면 앱이 두 칸을 비우므로, 답한 세션은 저절로 빠진다.
 
+턴 도중 선택 창은 앱이 기록에 남기지 않는다. 턴이 안 끝나 두 칸이 모두 비어 있는 세션만
+대화 기록의 끝을 읽어, 답이 없는 선택 창이 있으면 '답 필요'(ask)로 낸다.
+
 세션마다 1분에 한 번 이 스크립트를 부른다. 기록을 전부 읽는 일은 한 번에 CPU 0.3초쯤이라,
 결과를 잠깐 파일에 두고 세션끼리 나눠 쓴다.
 """
@@ -24,10 +27,15 @@ import time
 import unicodedata
 
 BASE = os.path.expanduser('~/Library/Application Support/Claude/claude-code-sessions')
+PROJECTS = os.path.join(os.environ.get('CLAUDE_CONFIG_DIR') or os.path.expanduser('~/.claude'), 'projects')
 CACHE = os.path.expanduser('~/Library/Caches/session-queue/scan.json')
 CACHE_MS = 45 * 1000
 FAILED_MS = 7 * 24 * 3600 * 1000
 WAITING = ('blocked', 'need_input')
+# 턴 도중 사용자의 답을 기다리는 도구
+ASKING = ('AskUserQuestion', 'ExitPlanMode')
+# 대화 기록은 수십 MB까지 커지지만 떠 있는 선택 창은 맨 끝에 있다
+TAIL_BYTES = 512 * 1024
 
 
 def nfc(text):
@@ -60,7 +68,61 @@ def classify(record, now_ms):
     return None
 
 
-def scan(base, now_ms):
+def tail_lines(path):
+    with open(path, 'rb') as handle:
+        size = os.fstat(handle.fileno()).st_size
+        handle.seek(max(0, size - TAIL_BYTES))
+        lines = handle.read().split(b'\n')
+    # 중간부터 읽었으면 첫 줄은 잘려 있다
+    return lines[1:] if size > TAIL_BYTES else lines
+
+
+def question_of(tool_input):
+    questions = tool_input.get('questions') if isinstance(tool_input, dict) else None
+    first = questions[0] if isinstance(questions, list) and questions else None
+    return (first.get('question') or '') if isinstance(first, dict) else ''
+
+
+def open_question(lines):
+    """대화 기록 줄들에서 아직 답이 없는 선택 창의 문구를 낸다. 없으면 None."""
+    waiting = {}
+    for line in lines:
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        role = entry.get('type') if isinstance(entry, dict) else None
+        if role not in ('assistant', 'user'):
+            continue
+        message = entry.get('message')
+        content = message.get('content') if isinstance(message, dict) else None
+        for block in content if isinstance(content, list) else [{'type': 'text'}]:
+            kind = block.get('type') if isinstance(block, dict) else None
+            if kind == 'tool_use' and block.get('name') in ASKING:
+                waiting[block.get('id')] = question_of(block.get('input'))
+            elif kind == 'tool_result':
+                waiting.pop(block.get('tool_use_id'), None)
+            elif kind == 'text' and role == 'user':
+                # 사용자가 새 말을 했으면 그 앞의 창은 이미 닫혔다
+                waiting.clear()
+    return next(iter(waiting.values()), None)
+
+
+def asking(record, projects):
+    if record.get('turnWrapUp') or record.get('postTurnSummary'):
+        return None
+    name = record.get('cliSessionId')
+    if not isinstance(name, str):
+        return None
+    found = glob.glob(os.path.join(glob.escape(projects), '*', glob.escape(name) + '.jsonl'))
+    try:
+        text = open_question(tail_lines(found[0])) if found else None
+    except OSError:
+        return None
+    return None if text is None else ('ask', text)
+
+
+def scan(base, now_ms, projects=PROJECTS):
     rows = []
     scheduled = 0
     for path in glob.glob(os.path.join(base, '*', '*', 'local_*.json')):
@@ -71,7 +133,7 @@ def scan(base, now_ms):
             continue
         if record.get('isArchived'):
             continue
-        found = classify(record, now_ms)
+        found = classify(record, now_ms) or asking(record, projects)
         if found is None:
             continue
         if record.get('scheduledTaskId'):
