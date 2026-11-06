@@ -1,4 +1,4 @@
-"""턴 도중 선택 창 판정 시험. 실행: /usr/bin/python3 -I tests/test_scan_sessions.py"""
+"""턴 도중 선택 창·제안 카드 판정 시험. 실행: /usr/bin/python3 -I tests/test_scan_sessions.py"""
 import importlib.util
 import json
 import os
@@ -32,6 +32,10 @@ def used(tool_id, name):
 
 def result(tool_id):
     return line('user', [{'type': 'tool_result', 'tool_use_id': tool_id, 'content': 'ok'}])
+
+
+def card(title='Tidy the notes', **fields):
+    return {'id': 'task_1', 'title': title, 'expiresAt': NOW + 1000, **fields}
 
 
 class OpenQuestion(unittest.TestCase):
@@ -110,6 +114,44 @@ class Scan(unittest.TestCase):
 
     def test_scheduled_session_is_only_counted(self):
         self.session('routine', [asked()], scheduledTaskId='t')
+        scan = scanner.scan(self.base, NOW, self.projects)
+        self.assertEqual((scan['rows'], scan['scheduled']), ([], 1))
+
+    def test_unstarted_card_is_listed_with_its_title(self):
+        self.session('done', turnWrapUp={'description': 'done'}, postTurnSummary={'status_category': 'completed'},
+                     backgroundTaskSuggestions=[card()])
+        row = self.rows()[0]
+        self.assertEqual((row['kind'], row['text'], row['since']), ('ask', 'Tidy the notes', NOW - 1000))
+
+    def test_cards_that_no_longer_wait_are_left_out(self):
+        self.session('expired', backgroundTaskSuggestions=[card(expiresAt=NOW)])
+        self.session('accepted', backgroundTaskSuggestions=[card(offer=True, accepted=True)])
+        self.session('auto', backgroundTaskSuggestions=[card(autoStart='cloud')])
+        self.session('none', backgroundTaskSuggestions=[])
+        self.assertEqual(self.rows(), [])
+
+    def test_first_card_still_waiting_is_the_one_shown(self):
+        self.session('two', backgroundTaskSuggestions=[card('Old', expiresAt=NOW - 1), card('New')])
+        self.assertEqual(self.rows()[0]['text'], 'New')
+
+    def test_question_and_open_dialog_come_before_a_card(self):
+        self.session('asked', turnWrapUp={'description': 'x', 'needsUser': 'Pick one'},
+                     backgroundTaskSuggestions=[card()])
+        self.assertEqual(self.rows()[0]['text'], 'Pick one')
+        os.remove(os.path.join(self.base, 'a', 'b', 'local_asked.json'))
+        self.session('dialog', [asked()], backgroundTaskSuggestions=[card()])
+        self.assertEqual(self.rows()[0]['text'], 'Which one?')
+
+    def test_odd_card_fields_do_not_stop_the_scan(self):
+        self.session('text', backgroundTaskSuggestions='x')
+        self.session('item', backgroundTaskSuggestions=['x', None])
+        self.assertEqual(self.rows(), [])
+        self.session('bare', backgroundTaskSuggestions=[{'expiresAt': 'soon', 'title': 7}])
+        self.assertEqual([(row['kind'], row['text']) for row in self.rows()], [('ask', '')])
+
+    def test_archived_and_scheduled_cards_follow_the_session(self):
+        self.session('archived', backgroundTaskSuggestions=[card()], isArchived=True)
+        self.session('routine', backgroundTaskSuggestions=[card()], scheduledTaskId='t')
         scan = scanner.scan(self.base, NOW, self.projects)
         self.assertEqual((scan['rows'], scan['scheduled']), ([], 1))
 

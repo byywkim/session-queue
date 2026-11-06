@@ -15,6 +15,9 @@
 턴 도중 선택 창은 앱이 기록에 남기지 않는다. 턴이 안 끝나 두 칸이 모두 비어 있는 세션만
 대화 기록의 끝을 읽어, 답이 없는 선택 창이 있으면 '답 필요'(ask)로 낸다.
 
+새 세션 제안 카드도 사용자의 선택을 기다리지만 앱은 점을 찍지 않는다. 시작하지 않았고
+만료되지 않은 카드가 있으면 '답 필요'(ask)로 내고, 카드 제목을 남은 일로 쓴다.
+
 세션마다 1분에 한 번 이 스크립트를 부른다. 기록을 전부 읽는 일은 한 번에 CPU 0.3초쯤이라,
 결과를 잠깐 파일에 두고 세션끼리 나눠 쓴다.
 """
@@ -122,6 +125,19 @@ def asking(record, projects):
     return None if text is None else ('ask', text)
 
 
+def proposal(record, now_ms):
+    cards = record.get('backgroundTaskSuggestions')
+    for card in cards if isinstance(cards, list) else []:
+        if not isinstance(card, dict) or card.get('accepted') or card.get('autoStart'):
+            continue
+        expires = card.get('expiresAt')
+        # 앱이 꺼져 있던 사이 만료된 카드는 기록에 남아 있을 수 있다
+        if isinstance(expires, (int, float)) and expires <= now_ms:
+            continue
+        return 'ask', card.get('title') or ''
+    return None
+
+
 def scan(base, now_ms, projects=PROJECTS):
     rows = []
     scheduled = 0
@@ -133,7 +149,7 @@ def scan(base, now_ms, projects=PROJECTS):
             continue
         if record.get('isArchived'):
             continue
-        found = classify(record, now_ms) or asking(record, projects)
+        found = classify(record, now_ms) or asking(record, projects) or proposal(record, now_ms)
         if found is None:
             continue
         if record.get('scheduledTaskId'):

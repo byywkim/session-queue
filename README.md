@@ -17,7 +17,7 @@ The session you are looking at and scheduled-task sessions are left out.
 
 | Label | Meaning |
 |---|---|
-| Needs reply | Claude is waiting for your answer or decision: the sidebar shows a dot, or a choice dialog is open in the middle of a turn |
+| Needs reply | Claude is waiting for your answer or decision: the sidebar shows a dot, a choice dialog is open in the middle of a turn, or a suggested new-session card is still open |
 | Unmarked question | Claude left a question, but the app did not mark the session with a dot |
 | Error | The session stopped with an error in the last 7 days |
 
