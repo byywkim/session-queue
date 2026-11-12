@@ -18,6 +18,12 @@
 새 세션 제안 카드도 사용자의 선택을 기다리지만 앱은 점을 찍지 않는다. 시작하지 않았고
 만료되지 않은 카드가 있으면 '답 필요'(ask)로 내고, 카드 제목을 남은 일로 쓴다.
 
+앱은 끝맺음에 blocked가 있을 때만 needsUser를 남긴다. 끝맺음에 질문(ask)만 넣고 blocked를
+빠뜨린 턴은 대화 기록 끝의 끝맺음 호출을 읽어 '점 없는 질문'(silent)으로 낸다.
+
+같은 일이 부모·하위 세션에 두 번 뜨지 않게 한다. 하위 세션이 목록에 있거나 아직 턴을
+도는 중이면, 그 부모의 '점 없는 질문'(분류기 추정)은 뺀다. 부모가 blocked로 직접 물은 것은 둔다.
+
 세션마다 1분에 한 번 이 스크립트를 부른다. 기록을 전부 읽는 일은 한 번에 CPU 0.3초쯤이라,
 결과를 잠깐 파일에 두고 세션끼리 나눠 쓴다.
 """
@@ -39,6 +45,8 @@ WAITING = ('blocked', 'need_input')
 ASKING = ('AskUserQuestion', 'ExitPlanMode')
 # 대화 기록은 수십 MB까지 커지지만 떠 있는 선택 창은 맨 끝에 있다
 TAIL_BYTES = 512 * 1024
+# 끝맺음 호출 뒤에는 마무리 글만 온다(2026-11-12 실측 84건, 파일 끝에서 최대 31KB)
+WRAP_TAIL_BYTES = 128 * 1024
 
 
 def nfc(text):
@@ -71,13 +79,20 @@ def classify(record, now_ms):
     return None
 
 
-def tail_lines(path):
+def tail_lines(path, limit=TAIL_BYTES):
     with open(path, 'rb') as handle:
         size = os.fstat(handle.fileno()).st_size
-        handle.seek(max(0, size - TAIL_BYTES))
+        handle.seek(max(0, size - limit))
         lines = handle.read().split(b'\n')
     # 중간부터 읽었으면 첫 줄은 잘려 있다
-    return lines[1:] if size > TAIL_BYTES else lines
+    return lines[1:] if size > limit else lines
+
+
+def transcript(projects, name):
+    if not isinstance(name, str) or not name:
+        return None
+    found = glob.glob(os.path.join(glob.escape(projects), '*', glob.escape(name) + '.jsonl'))
+    return found[0] if found else None
 
 
 def question_of(tool_input):
@@ -114,15 +129,49 @@ def open_question(lines):
 def asking(record, projects):
     if record.get('turnWrapUp') or record.get('postTurnSummary'):
         return None
-    name = record.get('cliSessionId')
-    if not isinstance(name, str):
-        return None
-    found = glob.glob(os.path.join(glob.escape(projects), '*', glob.escape(name) + '.jsonl'))
+    path = transcript(projects, record.get('cliSessionId'))
     try:
-        text = open_question(tail_lines(found[0])) if found else None
+        text = open_question(tail_lines(path)) if path else None
     except OSError:
         return None
     return None if text is None else ('ask', text)
+
+
+def wrap_ask(lines):
+    """대화 기록 줄들에서 마지막 끝맺음 호출이 blocked 없이 남긴 질문을 낸다. 없으면 None."""
+    last = None
+    for line in lines:
+        # 끝맺음이 아닌 줄은 JSON으로 풀지 않는다
+        if b'wrap_up' not in line:
+            continue
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        message = entry.get('message') if isinstance(entry, dict) else None
+        content = message.get('content') if isinstance(message, dict) else None
+        for block in content if isinstance(content, list) else []:
+            if (isinstance(block, dict) and block.get('type') == 'tool_use'
+                    and str(block.get('name') or '').endswith('wrap_up')):
+                last = block.get('input') if isinstance(block.get('input'), dict) else {}
+    if last is None or last.get('blocked') is True:
+        return None
+    text = last.get('ask')
+    return text if isinstance(text, str) and text.strip() else None
+
+
+def unmarked_ask(record, projects):
+    """끝맺음에 질문은 있는데 blocked가 빠져 앱이 점을 찍지 않은 턴."""
+    wrap = record.get('turnWrapUp')
+    # 예약 실행은 어차피 빼므로 대화 기록을 읽지 않는다
+    if not isinstance(wrap, dict) or isinstance(wrap.get('needsUser'), str) or record.get('scheduledTaskId'):
+        return None
+    path = transcript(projects, record.get('lastAssistantCliSessionId') or record.get('cliSessionId'))
+    try:
+        text = wrap_ask(tail_lines(path, WRAP_TAIL_BYTES)) if path else None
+    except OSError:
+        return None
+    return None if text is None else ('silent', text)
 
 
 def proposal(record, now_ms):
@@ -138,9 +187,31 @@ def proposal(record, now_ms):
     return None
 
 
+def child_of(record):
+    """하위 세션이면 (부모 id, 턴 도는 중인지, 마지막 활동 시각)."""
+    origin = record.get('spawnedFrom')
+    parent = origin.get('sessionId') if isinstance(origin, dict) else None
+    if not isinstance(parent, str):
+        return None
+    running = not record.get('turnWrapUp') and not record.get('postTurnSummary')
+    return parent, running, int(record.get('lastActivityAt') or 0)
+
+
+def without_parent_echo(rows, children):
+    """하위 세션이 맡은 일을 부모가 '점 없는 질문'으로 한 번 더 띄우면 부모 쪽을 뺀다."""
+    listed = {row['sid'] for row in rows}
+
+    def echoed(row):
+        return any(sid in listed or (running and at >= row['since'])
+                   for sid, running, at in children.get(row['sid'], []))
+
+    return [row for row in rows if row['kind'] != 'silent' or not echoed(row)]
+
+
 def scan(base, now_ms, projects=PROJECTS):
     rows = []
     scheduled = 0
+    children = {}
     for path in glob.glob(os.path.join(base, '*', '*', 'local_*.json')):
         try:
             with open(path, encoding='utf-8') as handle:
@@ -149,7 +220,11 @@ def scan(base, now_ms, projects=PROJECTS):
             continue
         if record.get('isArchived'):
             continue
-        found = classify(record, now_ms) or asking(record, projects) or proposal(record, now_ms)
+        child = child_of(record)
+        if child is not None:
+            children.setdefault(child[0], []).append((record.get('sessionId'),) + child[1:])
+        found = (classify(record, now_ms) or asking(record, projects)
+                 or unmarked_ask(record, projects) or proposal(record, now_ms))
         if found is None:
             continue
         if record.get('scheduledTaskId'):
@@ -170,7 +245,7 @@ def scan(base, now_ms, projects=PROJECTS):
             # '처리함'을 이 턴에만 묶는 표시: 새 턴이 끝나면 값이 바뀌어 다시 뜬다
             'marker': str(record.get('postTurnSummaryFor') or since),
         })
-    return {'at': now_ms, 'rows': rows, 'scheduled': scheduled}
+    return {'at': now_ms, 'rows': without_parent_echo(rows, children), 'scheduled': scheduled}
 
 
 def cached(now_ms):

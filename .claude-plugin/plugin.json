@@ -1,6 +1,6 @@
 {
   "name": "session-queue",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Lists the Code sessions waiting on you, oldest first: a band above the prompt, a pane and /queue. Can also count lines from a to-do file",
   "author": {
     "name": "byywkim"

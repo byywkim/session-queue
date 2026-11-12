@@ -155,6 +155,68 @@ class Scan(unittest.TestCase):
         scan = scanner.scan(self.base, NOW, self.projects)
         self.assertEqual((scan['rows'], scan['scheduled']), ([], 1))
 
+    def test_question_without_blocked_is_listed_as_unmarked(self):
+        self.session('soft', [wrapped(ask='Draft it?')], turnWrapUp={'description': 'done'},
+                     postTurnSummary={'status_category': 'completed'})
+        row = self.rows()[0]
+        self.assertEqual((row['kind'], row['text']), ('silent', 'Draft it?'))
+
+    def test_recap_only_and_blocked_wraps_add_nothing_new(self):
+        self.session('recap', [wrapped()], turnWrapUp={'description': 'done'})
+        self.session('blocked', [wrapped(ask='Send it?', blocked=True)], turnWrapUp={'description': 'done'})
+        self.assertEqual(self.rows(), [])
+
+    def test_wrap_is_read_from_the_last_assistant_transcript(self):
+        self.session('resumed', turnWrapUp={'description': 'done'}, lastAssistantCliSessionId='later')
+        with open(os.path.join(self.projects, 'p', 'later.jsonl'), 'wb') as handle:
+            handle.write(wrapped(ask='Which file?') + b'\n')
+        self.assertEqual(self.rows()[0]['text'], 'Which file?')
+
+    def test_scheduled_wrap_with_a_question_is_not_read(self):
+        self.session('routine', [wrapped(ask='Post it?')], turnWrapUp={'description': 'done'}, scheduledTaskId='t')
+        scan = scanner.scan(self.base, NOW, self.projects)
+        self.assertEqual((scan['rows'], scan['scheduled']), ([], 0))
+
+    def test_parent_echo_of_a_listed_child_is_dropped(self):
+        waiting = {'turnWrapUp': {'description': 'x'}, 'postTurnSummary': {'status_category': 'blocked'}}
+        self.session('parent', **waiting)
+        self.session('child', turnWrapUp={'description': 'x', 'needsUser': 'Pick a plan'},
+                     spawnedFrom={'sessionId': 'local_parent'})
+        self.assertEqual([row['sid'] for row in self.rows()], ['local_child'])
+
+    def test_parent_echo_of_a_running_child_is_dropped(self):
+        self.session('parent', turnWrapUp={'description': 'x'}, postTurnSummary={'status_category': 'blocked'})
+        self.session('child', spawnedFrom={'sessionId': 'local_parent'}, lastActivityAt=NOW)
+        self.assertEqual(self.rows(), [])
+
+    def test_parent_keeps_its_own_question_and_old_children_do_not_hide_it(self):
+        self.session('asks', turnWrapUp={'description': 'x', 'needsUser': 'Mine'})
+        self.session('kid', turnWrapUp={'description': 'x', 'needsUser': 'Yours'}, spawnedFrom={'sessionId': 'local_asks'})
+        self.session('quiet', turnWrapUp={'description': 'x'}, postTurnSummary={'status_category': 'blocked'})
+        self.session('stale', spawnedFrom={'sessionId': 'local_quiet'}, lastActivityAt=NOW - 5000)
+        self.assertEqual(sorted(row['sid'] for row in self.rows()), ['local_asks', 'local_kid', 'local_quiet'])
+
+
+def wrapped(**fields):
+    block = {'type': 'tool_use', 'id': 'w1', 'name': 'mcp__ccd_turn__wrap_up', 'input': {'recap': 'Done.', **fields}}
+    return line('assistant', [block])
+
+
+class WrapAsk(unittest.TestCase):
+    def test_last_wrap_wins(self):
+        lines = [wrapped(ask='Old?'), line('user', 'go on'), wrapped()]
+        self.assertIsNone(scanner.wrap_ask(lines))
+        self.assertEqual(scanner.wrap_ask([wrapped(), wrapped(ask='New?')]), 'New?')
+
+    def test_blank_or_odd_asks_give_nothing(self):
+        self.assertIsNone(scanner.wrap_ask([wrapped(ask='  ')]))
+        self.assertIsNone(scanner.wrap_ask([wrapped(ask=['x'])]))
+        self.assertIsNone(scanner.wrap_ask([b'{broken wrap_up', b'']))
+
+    def test_the_word_alone_in_other_text_is_not_a_wrap(self):
+        text = line('assistant', [{'type': 'text', 'text': 'I will call wrap_up next'}])
+        self.assertIsNone(scanner.wrap_ask([text]))
+
 
 if __name__ == '__main__':
     unittest.main()
